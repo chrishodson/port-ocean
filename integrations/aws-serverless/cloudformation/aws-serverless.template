@@ -17,10 +17,14 @@ Parameters:
     Default: python3.11
   Handler:
     Type: String
-    Default: handler.lambda_handler
+    Default: index.lambda_handler
   PortWebhookUrl:
     Type: String
     Description: The Port ingest webhook URL that the Lambda will POST to (include schema 'https://')
+  SupportedEventSources:
+    Type: CommaDelimitedList
+    Default: "aws.ec2,aws.s3,aws.rds,aws.sqs,aws.ecs,aws.eks,aws.lambda"
+    Description: Comma-separated list of AWS event sources to process (EventBridge rule)
 
 Resources:
   EventsQueue:
@@ -51,6 +55,8 @@ Resources:
                 Action:
                   - sqs:ReceiveMessage
                   - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
                   - sqs:GetQueueAttributes
                 Resource: !GetAtt EventsQueue.Arn
 
@@ -65,75 +71,53 @@ Resources:
       Environment:
         Variables:
           PORT_WEBHOOK_URL: !Ref PortWebhookUrl
-    Code:
-    ZipFile: |
-      import json
-      import os
-      import logging
-      import time
-      from urllib import request
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          from urllib import request
 
-      logger = logging.getLogger()
-      logger.setLevel(logging.INFO)
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
 
-      PORT_WEBHOOK = os.environ.get('PORT_WEBHOOK_URL')
+          PORT_WEBHOOK = os.environ.get('PORT_WEBHOOK_URL')
 
-      def post_to_port(body_bytes: bytes, headers: dict) -> tuple[int, str]:
-        req = request.Request(PORT_WEBHOOK, data=body_bytes, headers=headers, method='POST')
-        with request.urlopen(req, timeout=10) as resp:
-          return resp.getcode(), resp.read().decode('utf-8')
+          def post_to_port(body_bytes, headers):
+            req = request.Request(PORT_WEBHOOK, data=body_bytes, headers=headers, method='POST')
+            with request.urlopen(req, timeout=10) as resp:
+              return resp.getcode(), resp.read().decode('utf-8')
 
-      def _build_minimal_entity_from_event(payload: dict) -> dict:
-        identifier = None
-        if isinstance(payload.get('detail'), dict):
-          detail = payload.get('detail')
-          identifier = detail.get('resource') or detail.get('requestParameters', {}).get('bucketName')
-          if not identifier:
-            identifier = payload.get('id') or payload.get('detail', {}).get('arn')
-        identifier = identifier or payload.get('id') or f"aws-event-{int(time.time()*1000)}"
-        title = payload.get('detail-type') or payload.get('source') or identifier
-        return {
-          'identifier': identifier,
-          'title': title,
-          'blueprint': 'awsEvent',
-          'properties': {'event': payload},
-        }
+          def lambda_handler(event, context):
+            logger.info('Received event with %d records', len(event.get('Records', [])))
+            for rec in event.get('Records', []):
+              body = rec.get('body')
+              if not body:
+                continue
+              try:
+                payload = json.loads(body)
+              except Exception:
+                logger.exception('Failed to parse event body')
+                continue
 
-      def lambda_handler(event, context):
-        logger.info('Received event with %d records', len(event.get('Records', [])))
-        for rec in event.get('Records', []):
-          body = rec.get('body')
-          if not body:
-            continue
-          try:
-            payload = json.loads(body)
-          except Exception:
-            payload = {'raw': body}
-
-          if isinstance(payload, dict) and 'blueprint' in payload and 'identifier' in payload:
-            entity = payload
-          else:
-            entity = _build_minimal_entity_from_event(payload)
-
-          body_bytes = json.dumps(entity).encode('utf-8')
-          headers = {'Content-Type': 'application/json'}
-          try:
-            status, resp_text = post_to_port(body_bytes, headers)
-            logger.info('Posted entity to Port, status=%s, identifier=%s', status, entity.get('identifier'))
-          except Exception:
-            logger.exception('Error posting to Port')
+              # Pass through the raw EventBridge event for Port integration to map
+              body_bytes = json.dumps(payload).encode('utf-8')
+              headers = {'Content-Type': 'application/json'}
+              try:
+                status, resp_text = post_to_port(body_bytes, headers)
+                logger.info('Posted event to Port, status=%s, source=%s', status, payload.get('source'))
+              except Exception:
+                logger.exception('Error posting to Port')
 
   EventBridgeToSqsRule:
     Type: AWS::Events::Rule
     Properties:
       Description: "Route selected AWS events to SQS queue for Port processing"
       EventPattern:
-        source: ["aws.ec2", "aws.s3", "aws.rds", "aws.sqs"]
+        source: !Ref SupportedEventSources
       Targets:
         - Arn: !GetAtt EventsQueue.Arn
           Id: SqsTarget
-          SqsParameters:
-            MessageGroupId: "port-events" # For FIFO queue; ignored for standard queues
 
   SqsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -144,12 +128,13 @@ Resources:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal: '*'
+            Principal:
+              Service: events.amazonaws.com
             Action: "sqs:SendMessage"
             Resource: !GetAtt EventsQueue.Arn
             Condition:
               ArnEquals:
-                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/*
+                aws:SourceArn: !GetAtt EventBridgeToSqsRule.Arn
 
   EventSourceMapping:
     Type: AWS::Lambda::EventSourceMapping

@@ -64,7 +64,27 @@ flowchart LR
 ```
 
 ## Install
-See the concise install guide in [`docs/installation.md`](docs/installation.md).
+
+See detailed setup instructions in [`docs/installation.md`](docs/installation.md).
+
+**Single account (5 min):**
+```bash
+git clone --depth 1 https://github.com/port-labs/port-ocean.git
+cd port-ocean/integrations/aws-serverless
+pip install -r requirements.txt
+export PORT_CLIENT_ID="your-id"
+export PORT_CLIENT_SECRET="your-secret"
+python3 install_standalone.py
+```
+
+**Multi-account (via StackSets):**
+```bash
+cd port-ocean/integrations/aws-serverless
+python3 install_stackset.py --webhook-url "https://…" --target-ous "ou-…" --regions "us-east-1" --apply
+```
+
+See [`docs/installation.md`](docs/installation.md) for full options and prerequisites.
+
 
 ## Supported AWS Event Types
 
@@ -89,7 +109,7 @@ See [`docs/dataflow.md`](docs/dataflow.md).
 ## Limitations & Roadmap
 
 ### Immediate TODO
-- [ ] Automated StackSets deployment script for multi-account environments
+- [ ] ~~Automated StackSets deployment script for multi-account environments~~ ✓ `install_stackset.py`
 - [ ] Initial sync of entities
 - [ ] Handle deletion of entities
 

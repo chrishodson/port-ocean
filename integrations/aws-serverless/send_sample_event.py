@@ -24,11 +24,19 @@ def send_event(webhook_url: str, event: dict) -> None:
     print(f"\nSending event to {webhook_url}...")
     print(f"Event payload: {json.dumps(event, indent=2)}\n")
 
-    with httpx.Client(timeout=10.0) as client:
-        response = client.post(webhook_url, json=event)
-        print(f"Response: {response.status_code}")
-        if response.text:
-            print(f"Body: {response.text}")
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(webhook_url, json=event)
+            print(f"Response: {response.status_code}")
+            if response.text:
+                print(f"Body: {response.text}")
+            if response.status_code >= 400:
+                print(f"\n⚠️  Request failed with status {response.status_code}")
+                raise SystemExit(1)
+            print("\n✓ Event sent successfully")
+    except httpx.RequestError as exc:
+        print(f"\n✗ Request failed: {exc}")
+        raise SystemExit(1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,8 +47,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Send a sample AWS event to a Port webhook for testing."""
     args = parse_args()
-    event = load_event(args.event_file)
+
+    try:
+        event = load_event(args.event_file)
+    except FileNotFoundError as exc:
+        print(f"✗ Error: {exc}")
+        raise SystemExit(1)
+    except json.JSONDecodeError as exc:
+        print(f"✗ Invalid JSON in {args.event_file}: {exc}")
+        raise SystemExit(1)
 
     print("=" * 70)
     print("AWS Event Sender")

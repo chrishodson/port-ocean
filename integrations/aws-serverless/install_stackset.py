@@ -221,6 +221,8 @@ def create_stackset_and_instances(args: argparse.Namespace, cfn, regions: List[s
     op = cfn.create_stack_instances(**instance_kwargs)
     op_id = op.get("OperationId")
     print(f"Started stack instances operation: {op_id}")
+    print(f"\nTo check status: aws cloudformation describe-stack-set-operation --stack-set-name {args.stackset_name} --operation-id {op_id}")
+    print(f"To list instances: aws cloudformation list-stack-instances --stack-set-name {args.stackset_name}")
 
 
 def main() -> int:

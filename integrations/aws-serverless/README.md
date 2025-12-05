@@ -1,6 +1,6 @@
 # AWS-Serverless
 
-Event-driven integration that routes AWS events into Port using serverless primitives.
+Event-driven integration that routes AWS events into Port using serverless primitives for near real-time catalog updates.
 
 ## Why use this?
 
@@ -13,24 +13,6 @@ This integration helps you:
 ## What it does
 - In Port: creates required blueprints, applies mapping config, and creates/uses the ingest webhook
 - In AWS: deploys EventBridge rule(s), an SQS queue, and a Lambda that forwards events to Port
-
-## Quick Start
-**5-minute setup**
-
-From an environment that has permission to create a CloudFormation stack for the AWS account you will be using:
-```bash
-# Clone the repository and navigate to the integration
-git clone --depth 1 https://github.com/port-labs/port-ocean.git
-cd port-ocean/integrations/aws-serverless
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Set Port credentials and run installer
-export PORT_CLIENT_ID="your-id"
-export PORT_CLIENT_SECRET="your-secret"
-python3 install_standalone.py
-```
 
 ## Architecture
 
@@ -83,7 +65,7 @@ cd port-ocean/integrations/aws-serverless
 python3 install_stackset.py --webhook-url "https://…" --target-ous "ou-…" --regions "us-east-1" --apply
 ```
 
-See [`docs/installation.md`](docs/installation.md) for full options and prerequisites.
+See [`docs/installation.md`](docs/installation.md) for full options and prerequisites. For updating an existing deployment, see [`docs/updating.md`](docs/updating.md).
 
 
 ## Supported AWS Event Types
@@ -96,6 +78,8 @@ The following AWS resource types are currently supported:
 - **ECS Clusters** (`AWS::ECS::Cluster`)
 
 Blueprints and mappings live in `.port/resources/` inside this integration.
+
+Want to add another source? See [`docs/adding-event-source.md`](docs/adding-event-source.md).
 
 ## Troubleshooting
 See [`docs/troubleshooting.md`](docs/troubleshooting.md).

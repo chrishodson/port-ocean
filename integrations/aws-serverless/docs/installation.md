@@ -143,6 +143,9 @@ For full help and advanced options, run `python3 install_stackset.py --help`.
 - `--webhook` supports identifier (`aws_ingest`), full URL, or `/v1/webhooks/<id>` path.
 - Narrow sources with `--event-sources "aws.ec2,aws.s3"` if you want fewer events.
 
+### Extending to new event sources
+See [`docs/adding-event-source.md`](adding-event-source.md) for how to add blueprints, mappings, and EventBridge sources.
+
 ## Uninstallation
 - Delete the CloudFormation stack: `aws cloudformation delete-stack --stack-name port-aws-serverless`
 - Optional: remove the Port integration and blueprints if they are not used elsewhere.

@@ -68,17 +68,61 @@
    - Blueprints and integration appear in Port
 
 ## StackSets (multi-account)
-1. Run Port setup once:
+
+Deploy across multiple AWS accounts from a central management account.
+
+### Prerequisites
+- AWS Organization with StackSets trusted access enabled
+- Management account (or delegated admin for StackSets)
+- Port webhook URL (from running `install_standalone.py --port-only`)
+- Python 3.12+ with dependencies: `pip install -r requirements.txt`
+
+### Setup
+1. **Run Port setup once** (from anywhere with Port credentials):
    ```bash
    export PORT_CLIENT_ID="<id>"
    export PORT_CLIENT_SECRET="<secret>"
    python3 install_standalone.py --port-only
    ```
-2. Create a StackSet using `cloudformation/aws-serverless.template` from the management account.
-3. Deploy stack instances with parameters:
-   - `PortWebhookUrl`: URL from the installer output (or Port UI)
-   - `QueueName`: default `port-aws-events-queue`
-   - `LambdaFunctionName`: default `port-aws-event-processor`
+   Copy the webhook URL from the output.
+
+2. **Run preflight checks** (from management account, in the integration directory):
+   ```bash
+   python3 install_stackset.py \
+     --webhook-url "https://ingest.getport.io/your-webhook" \
+     --target-ous "ou-xxxx-yyyyyyyy" \
+     --regions "us-east-1 us-west-2"
+   ```
+   This validates your setup without making any changes.
+
+3. **Deploy with `--apply`** once preflight passes:
+   ```bash
+   python3 install_stackset.py \
+     --webhook-url "https://ingest.getport.io/your-webhook" \
+     --target-ous "ou-xxxx-yyyyyyyy" \
+     --regions "us-east-1 us-west-2" \
+     --apply
+   ```
+   This creates the StackSet and deploys stack instances to target OUs.
+
+### CLI Options (install_stackset.py)
+| Option | Default | Required | Description |
+| --- | --- | --- | --- |
+| `--webhook-url` | — | Yes | Port ingest webhook URL (https://…) |
+| `--stackset-name` | `port-aws-serverless` | — | StackSet name |
+| `--template-url` | GitHub main branch | — | CloudFormation template URL |
+| `--queue-name` | `port-aws-events-queue` | — | SQS queue name |
+| `--lambda-name` | `port-aws-event-processor` | — | Lambda function name |
+| `--event-sources` | `aws.ec2,aws.s3,aws.ecs` | — | Comma-separated EventBridge sources |
+| `--permission-model` | `service-managed` | — | `service-managed` or `self-managed` |
+| `--target-ous` | — | service-managed | Comma-separated OU IDs for deployment |
+| `--target-accounts` | — | self-managed | Comma-separated account IDs for deployment |
+| `--regions` | — | Yes | Space or comma-separated regions for deployment |
+| `--admin-role-arn` | — | self-managed | Admin role ARN for self-managed StackSets |
+| `--execution-role-name` | `AWSCloudFormationStackSetExecutionRole` | self-managed | Execution role name in target accounts |
+| `--apply` | `false` | — | If set, creates/updates StackSet and stack instances |
+
+For full help and advanced options, run `python3 install_stackset.py --help`.
 
 ## CLI options (installer)
 | Option | Default | Description |

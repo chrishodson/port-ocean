@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  AWS Serverless stack for Port integration. Creates an EventBridge rule that routes
+  AWS events to an SQS queue and a Lambda function that processes the queue and
+  forwards enriched events to Port via a single ingest webhook.
+
+Parameters:
+  QueueName:
+    Type: String
+    Default: port-aws-events-queue
+    Description: Name of the SQS queue
+  LambdaFunctionName:
+    Type: String
+    Default: port-aws-event-processor
+  LambdaRuntime:
+    Type: String
+    Default: python3.11
+  Handler:
+    Type: String
+    Default: index.lambda_handler
+  PortWebhookUrl:
+    Type: String
+    Description: The Port ingest webhook URL that the Lambda will POST to (include schema 'https://')
+  SupportedEventSources:
+    Type: CommaDelimitedList
+    Default: "aws.ec2,aws.s3,aws.rds,aws.sqs,aws.ecs,aws.eks,aws.lambda"
+    Description: Comma-separated list of AWS event sources to process (EventBridge rule)
+
+Resources:
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref QueueName
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${LambdaFunctionName}-execution-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SqsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt EventsQueue.Arn
+
+  PortEventsProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Runtime: !Ref LambdaRuntime
+      Handler: !Ref Handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          PORT_WEBHOOK_URL: !Ref PortWebhookUrl
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          from urllib import request
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          PORT_WEBHOOK = os.environ.get('PORT_WEBHOOK_URL')
+
+          def post_to_port(body_bytes, headers):
+            req = request.Request(PORT_WEBHOOK, data=body_bytes, headers=headers, method='POST')
+            with request.urlopen(req, timeout=10) as resp:
+              return resp.getcode(), resp.read().decode('utf-8')
+
+          def lambda_handler(event, context):
+            logger.info('Received event with %d records', len(event.get('Records', [])))
+            for rec in event.get('Records', []):
+              body = rec.get('body')
+              if not body:
+                continue
+              try:
+                payload = json.loads(body)
+              except Exception:
+                logger.exception('Failed to parse event body')
+                continue
+
+              # Pass through the raw EventBridge event for Port integration to map
+              body_bytes = json.dumps(payload).encode('utf-8')
+              headers = {'Content-Type': 'application/json'}
+              try:
+                status, resp_text = post_to_port(body_bytes, headers)
+                logger.info('Posted event to Port, status=%s, source=%s', status, payload.get('source'))
+              except Exception:
+                logger.exception('Error posting to Port')
+
+  EventBridgeToSqsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Route selected AWS events to SQS queue for Port processing"
+      EventPattern:
+        source: !Ref SupportedEventSources
+      Targets:
+        - Arn: !GetAtt EventsQueue.Arn
+          Id: SqsTarget
+
+  SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EventsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: "sqs:SendMessage"
+            Resource: !GetAtt EventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt EventBridgeToSqsRule.Arn
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      EventSourceArn: !GetAtt EventsQueue.Arn
+      FunctionName: !GetAtt PortEventsProcessorFunction.Arn
+      Enabled: True
+
+Outputs:
+  QueueUrl:
+    Description: URL for the SQS queue
+    Value: !Ref EventsQueue
+  LambdaName:
+    Description: Lambda function name
+    Value: !Ref PortEventsProcessorFunction

@@ -1,0 +1,59 @@
+deleteDependentEntities: true
+createMissingRelatedEntities: true
+resources:
+  - kind: AWS::Account::Info
+    selector:
+      query: '.source == "aws.organizations"'
+    port:
+      entity:
+        mappings:
+          identifier: .account
+          title: .account
+          blueprint: '"awsAccount"'
+          properties:
+            region: .region
+  - kind: AWS::S3::Bucket
+    selector:
+      query: '.source == "aws.s3" and .detail.bucket.name'
+    port:
+      entity:
+        mappings:
+          identifier: .detail.bucket.name
+          title: .detail.bucket.name
+          blueprint: '"s3Bucket"'
+          properties:
+            arn: .resources[0]
+            region: .region
+          relations:
+            account: .account
+  - kind: AWS::EC2::Instance
+    selector:
+      query: '.source == "aws.ec2" and (."detail-type" | contains("EC2 Instance"))'
+    port:
+      entity:
+        mappings:
+          identifier: '."detail"."instance-id"'
+          title: '."detail"."instance-id"'
+          blueprint: '"ec2Instance"'
+          properties:
+            state: .detail.state
+            region: .region
+            arn: .resources[0]
+          relations:
+            account: .account
+  - kind: AWS::ECS::Service
+    selector:
+      query: '.source == "aws.ecs" and (."detail-type" | contains("ECS"))'
+    port:
+      entity:
+        mappings:
+          identifier: .resources[0]
+          title: .resources[0] | split("/") | last
+          blueprint: '"ecsCluster"'
+          properties:
+            eventType: .detail.eventType
+            eventName: .detail.eventName
+            region: .region
+            deploymentId: .detail.deploymentId
+          relations:
+            account: .account

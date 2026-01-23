@@ -21,16 +21,49 @@ Parameters:
   PortWebhookUrl:
     Type: String
     Description: The Port ingest webhook URL that the Lambda will POST to (include schema 'https://')
-  SupportedEventSources:
-    Type: CommaDelimitedList
-    Default: "aws.ec2,aws.s3,aws.rds,aws.sqs,aws.ecs,aws.eks,aws.lambda"
-    Description: Comma-separated list of AWS event sources to process (EventBridge rule)
+  EventBridgePattern:
+    Type: String
+    Default: |
+      {
+        "$or": [
+          {
+            "source": ["aws.ecs"],
+            "detail-type": ["ECS Container Instance State Change"]
+          },
+          {
+            "source": ["aws.ec2"],
+            "detail-type": ["EC2 Instance State-change Notification"],
+            "detail": {
+              "state": ["running", "terminated", "stopped"]
+            }
+          },
+          {
+            "source": ["aws.s3"],
+            "detail-type": ["AWS Service Event via CloudTrail"],
+            "detail": {
+              "eventSource": ["s3.amazonaws.com"]
+            }
+          }
+        ]
+      }
+    Description: EventBridge event pattern filter (JSON format)
 
 Resources:
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${QueueName}-dlq"
+      MessageRetentionPeriod: 1209600
+
   EventsQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Ref QueueName
+      MessageRetentionPeriod: 3600
+      VisibilityTimeout: 60
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -76,7 +109,7 @@ Resources:
           import json
           import os
           import logging
-          from urllib import request
+          from urllib import request, error
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
@@ -84,40 +117,59 @@ Resources:
           PORT_WEBHOOK = os.environ.get('PORT_WEBHOOK_URL')
 
           def post_to_port(body_bytes, headers):
-            req = request.Request(PORT_WEBHOOK, data=body_bytes, headers=headers, method='POST')
-            with request.urlopen(req, timeout=10) as resp:
-              return resp.getcode(), resp.read().decode('utf-8')
+            try:
+              req = request.Request(PORT_WEBHOOK, data=body_bytes, headers=headers, method='POST')
+              with request.urlopen(req, timeout=10) as resp:
+                return resp.getcode(), resp.read().decode('utf-8')
+            except error.HTTPError as e:
+              logger.error('HTTP error %d posting to Port: %s', e.code, e.read().decode('utf-8'))
+              raise
+            except error.URLError as e:
+              logger.error('URL error posting to Port: %s', e.reason)
+              raise
 
           def lambda_handler(event, context):
             logger.info('Received event with %d records', len(event.get('Records', [])))
-            for rec in event.get('Records', []):
+            failed_records = []
+            for idx, rec in enumerate(event.get('Records', [])):
               body = rec.get('body')
               if not body:
+                logger.warning('Record %d has no body, skipping', idx)
                 continue
               try:
                 payload = json.loads(body)
               except Exception:
-                logger.exception('Failed to parse event body')
+                logger.exception('Record %d: Failed to parse event body', idx)
+                failed_records.append(rec.get('messageId'))
                 continue
 
-              # Pass through the raw EventBridge event for Port integration to map
               body_bytes = json.dumps(payload).encode('utf-8')
               headers = {'Content-Type': 'application/json'}
               try:
                 status, resp_text = post_to_port(body_bytes, headers)
-                logger.info('Posted event to Port, status=%s, source=%s', status, payload.get('source'))
+                logger.info('Record %d: Posted event to Port, status=%s, source=%s', idx, status, payload.get('source'))
               except Exception:
-                logger.exception('Error posting to Port')
+                logger.exception('Record %d: Error posting to Port', idx)
+                failed_records.append(rec.get('messageId'))
+            
+            if failed_records:
+              logger.warning('Failed to process %d records: %s', len(failed_records), failed_records)
+            return {'statusCode': 200, 'processed': len(event.get('Records', [])) - len(failed_records)}
 
   EventBridgeToSqsRule:
     Type: AWS::Events::Rule
     Properties:
       Description: "Route selected AWS events to SQS queue for Port processing"
-      EventPattern:
-        source: !Ref SupportedEventSources
+      EventPattern: !Ref EventBridgePattern
+      State: ENABLED
       Targets:
         - Arn: !GetAtt EventsQueue.Arn
           Id: SqsTarget
+          RetryPolicy:
+            MaximumEventAge: 3600
+            MaximumRetryAttempts: 2
+          DeadLetterConfig:
+            Arn: !GetAtt DeadLetterQueue.Arn
 
   SqsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -148,6 +200,30 @@ Outputs:
   QueueUrl:
     Description: URL for the SQS queue
     Value: !Ref EventsQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-QueueUrl"
+  QueueArn:
+    Description: ARN of the SQS queue
+    Value: !GetAtt EventsQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-QueueArn"
+  DeadLetterQueueUrl:
+    Description: URL for the dead-letter queue (failed messages)
+    Value: !Ref DeadLetterQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-DLQUrl"
   LambdaName:
     Description: Lambda function name
     Value: !Ref PortEventsProcessorFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaName"
+  LambdaArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt PortEventsProcessorFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaArn"
+  EventBridgeRuleArn:
+    Description: ARN of the EventBridge rule
+    Value: !GetAtt EventBridgeToSqsRule.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RuleArn"
